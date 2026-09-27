@@ -1,91 +1,125 @@
 import AppKit
+import SSHManagerKit
 
-/// Sunucu ekleme/düzenleme penceresi. Programatik AppKit formu.
+/// Sunucu ekleme/düzenleme penceresi.
 final class EditServerWindow: NSObject, NSWindowDelegate {
 
     private var window: NSWindow!
     private let onSave: (Server, String?) -> Void
-
-    private var editing: Server?
+    private let editing: Server?
 
     private let nameField = NSTextField()
     private let hostField = NSTextField()
     private let portField = NSTextField()
     private let userField = NSTextField()
-    private let groupField = NSTextField()
-    private let postField = NSTextField()
+    private let groupField = NSComboBox()
     private let passwordField = NSSecureTextField()
+    private let keyField = NSTextField()
+    private let postField = NSTextField()
+    private let tunnelsField = NSTextField()
+    private let themePopup = NSPopUpButton()
+    private let tmuxCheck = NSButton(checkboxWithTitle: "Bağlantı koparsa kaldığın yerden devam et (tmux)", target: nil, action: nil)
 
     /// onSave: kaydedilen sunucu ve (girildiyse) parola. Parola nil ise değiştirme.
-    init(server: Server?, onSave: @escaping (Server, String?) -> Void) {
+    init(server: Server?, groups: [String], onSave: @escaping (Server, String?) -> Void) {
         self.editing = server
         self.onSave = onSave
         super.init()
+        groupField.addItems(withObjectValues: groups)
         buildWindow()
         populate(from: server)
     }
 
+    var isVisible: Bool { window.isVisible }
+
     func show() {
         NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
         window.center()
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(nameField)
     }
 
-    // MARK: - UI kurulumu
+    // MARK: - Arayüz
 
     private func buildWindow() {
-        let width: CGFloat = 420
-        let height: CGFloat = 360
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 480),
+                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = editing == nil ? "Yeni Sunucu" : "Sunucuyu Düzenle"
         window.delegate = self
         window.isReleasedWhenClosed = false
 
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        let placeholders: [(NSTextField, String)] = [
+            (nameField, "Ör. Canlı Web"),
+            (hostField, "192.168.1.10 veya ornek.com"),
+            (portField, "22"),
+            (userField, "root"),
+            (groupField, "Ör. Müşteri A (isteğe bağlı)"),
+            (passwordField, "Boş bırakırsan ilk bağlantıda sorulur"),
+            (keyField, "~/.ssh/id_ed25519 (isteğe bağlı)"),
+            (postField, "Ör. cd /var/www (isteğe bağlı)"),
+            (tunnelsField, "Ör. 5433:5432, 8080:localhost:80"),
+        ]
+        for (field, text) in placeholders {
+            field.placeholderString = text
+        }
+        portField.widthAnchor.constraint(equalToConstant: 80).isActive = true
 
-        let labels = ["Ad:", "Host:", "Port:", "Kullanıcı:", "Grup:", "Bağlantı sonrası komut:", "Parola:"]
-        let fields: [NSTextField] = [nameField, hostField, portField, userField, groupField, postField, passwordField]
-        let placeholders = ["Örn. Production Web", "192.168.1.10 veya ornek.com", "22", "root", "Production (opsiyonel)", "cd /var/www && tmux a (opsiyonel)", "Boş bırakırsan elle gireceksin"]
+        themePopup.addItems(withTitles: ServerTheme.allCases.map(\.title))
 
-        let rowHeight: CGFloat = 32
-        let topPadding: CGFloat = 16
-        let labelWidth: CGFloat = 170
-        let fieldX: CGFloat = labelWidth + 24
+        let chooseKey = NSButton(title: "Seç…", target: self, action: #selector(chooseKeyFile))
+        chooseKey.bezelStyle = .rounded
+        let keyRow = NSStackView(views: [keyField, chooseKey])
+        keyRow.spacing = 6
 
-        for (i, field) in fields.enumerated() {
-            let y = height - topPadding - rowHeight * CGFloat(i + 1) - 30
+        let hostRow = NSStackView(views: [hostField, label("Port:"), portField])
+        hostRow.spacing = 6
 
-            let label = NSTextField(labelWithString: labels[i])
-            label.alignment = .right
-            label.frame = NSRect(x: 12, y: y, width: labelWidth, height: 22)
-            content.addSubview(label)
-
-            field.frame = NSRect(x: fieldX, y: y, width: width - fieldX - 16, height: 24)
-            field.placeholderString = placeholders[i]
-            field.isBordered = true
-            field.bezelStyle = .roundedBezel
-            content.addSubview(field)
+        func help(_ text: String) -> NSTextField {
+            let t = NSTextField(wrappingLabelWithString: text)
+            t.font = .systemFont(ofSize: 11)
+            t.textColor = .secondaryLabelColor
+            return t
         }
 
-        // Butonlar
-        let saveButton = NSButton(title: "Kaydet", target: self, action: #selector(saveTapped))
-        saveButton.bezelStyle = .rounded
-        saveButton.keyEquivalent = "\r"
-        saveButton.frame = NSRect(x: width - 110, y: 16, width: 94, height: 30)
-        content.addSubview(saveButton)
+        let grid = NSGridView(views: [
+            [label("Ad:"), nameField],
+            [label("Host:"), hostRow],
+            [label("Kullanıcı:"), userField],
+            [label("Grup:"), groupField],
+            [label("Parola:"), passwordField],
+            [label("SSH anahtarı:"), keyRow],
+            [label("Bağlanınca çalıştır:"), postField],
+            [label("Tüneller:"), tunnelsField],
+            [NSGridCell.emptyContentView, help("Sunucudaki bir kapıyı kendi bilgisayarına bağlar. 5433:5432 → sunucudaki veritabanı localhost:5433'te açılır. Menüden açıp kapatırsın.")],
+            [label("Terminal rengi:"), themePopup],
+            [NSGridCell.emptyContentView, tmuxCheck],
+        ])
+        grid.column(at: 0).xPlacement = .trailing
+        grid.rowAlignment = .firstBaseline
+        grid.columnSpacing = 10
+        grid.rowSpacing = 10
+        grid.column(at: 1).width = 360
 
-        let cancelButton = NSButton(title: "İptal", target: self, action: #selector(cancelTapped))
-        cancelButton.bezelStyle = .rounded
-        cancelButton.keyEquivalent = "\u{1b}" // Esc
-        cancelButton.frame = NSRect(x: width - 210, y: 16, width: 94, height: 30)
-        content.addSubview(cancelButton)
+        let save = NSButton(title: "Kaydet", target: self, action: #selector(saveTapped))
+        save.keyEquivalent = "\r"
+        let cancel = NSButton(title: "İptal", target: self, action: #selector(cancelTapped))
+        cancel.keyEquivalent = "\u{1b}"
+        let buttons = NSStackView(views: [cancel, save])
+        buttons.spacing = 8
 
-        window.contentView = content
+        let root = NSStackView(views: [grid, buttons])
+        root.orientation = .vertical
+        root.alignment = .trailing
+        root.spacing = 18
+        root.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 18, right: 20)
+        window.contentView = root
+        window.setContentSize(root.fittingSize)
+    }
+
+    private func label(_ text: String) -> NSTextField {
+        let l = NSTextField(labelWithString: text)
+        l.alignment = .right
+        return l
     }
 
     private func populate(from server: Server?) {
@@ -98,7 +132,11 @@ final class EditServerWindow: NSObject, NSWindowDelegate {
         portField.stringValue = String(s.port)
         userField.stringValue = s.user
         groupField.stringValue = s.group
+        keyField.stringValue = s.identityFile
         postField.stringValue = s.postCommand
+        tunnelsField.stringValue = s.tunnels.map(\.spec).joined(separator: ", ")
+        themePopup.selectItem(at: ServerTheme.allCases.firstIndex(of: s.theme) ?? 0)
+        tmuxCheck.state = s.useTmux ? .on : .off
         // Parola alanı boş kalır; doldurulursa güncellenir, boşsa eskisi korunur.
         if KeychainHelper.hasPassword(account: s.keychainAccount) {
             passwordField.placeholderString = "•••••• (kayıtlı — değiştirmek için yaz)"
@@ -107,28 +145,47 @@ final class EditServerWindow: NSObject, NSWindowDelegate {
 
     // MARK: - Aksiyonlar
 
-    @objc private func saveTapped() {
-        let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
-        let host = hostField.stringValue.trimmingCharacters(in: .whitespaces)
-        let user = userField.stringValue.trimmingCharacters(in: .whitespaces)
-
-        guard !name.isEmpty, !host.isEmpty, !user.isEmpty else {
-            showAlert("Ad, Host ve Kullanıcı alanları zorunludur.")
-            return
+    @objc private func chooseKeyFile() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: Paths.expandTilde("~/.ssh"))
+        panel.showsHiddenFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Özel anahtar dosyasını seç (.pub olmayanı)"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.keyField.stringValue = (url.path as NSString).abbreviatingWithTildeInPath
         }
-        let port = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 22
+    }
 
-        var server = editing ?? Server(name: name, host: host, port: port, user: user)
-        server.name = name
-        server.host = host
+    @objc private func saveTapped() {
+        let trim = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard let port = Int(trim(portField.stringValue).isEmpty ? "22" : trim(portField.stringValue)) else {
+            return showAlert("Port bir sayı olmalı.")
+        }
+
+        var server = editing ?? Server(name: "", host: "", user: "")
+        server.name = trim(nameField.stringValue)
+        server.host = trim(hostField.stringValue)
         server.port = port
-        server.user = user
-        server.group = groupField.stringValue.trimmingCharacters(in: .whitespaces)
-        server.postCommand = postField.stringValue.trimmingCharacters(in: .whitespaces)
+        server.user = trim(userField.stringValue)
+        server.group = trim(groupField.stringValue)
+        server.identityFile = trim(keyField.stringValue)
+        server.postCommand = trim(postField.stringValue)
+        server.theme = ServerTheme.allCases[max(0, themePopup.indexOfSelectedItem)]
+        server.useTmux = tmuxCheck.state == .on
+
+        if let error = server.validationError { return showAlert(error) }
+        do {
+            server.tunnels = try Tunnel.parseList(tunnelsField.stringValue)
+        } catch {
+            return showAlert(error.localizedDescription)
+        }
+        if !server.identityFile.isEmpty, !FileManager.default.fileExists(atPath: Paths.expandTilde(server.identityFile)) {
+            return showAlert("Anahtar dosyası bulunamadı: \(server.identityFile)")
+        }
 
         let pwd = passwordField.stringValue
         onSave(server, pwd.isEmpty ? nil : pwd)
-
         window.close()
     }
 
@@ -138,9 +195,9 @@ final class EditServerWindow: NSObject, NSWindowDelegate {
 
     private func showAlert(_ message: String) {
         let alert = NSAlert()
-        alert.messageText = "Eksik Bilgi"
+        alert.messageText = "Kontrol et"
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.runModal()
+        alert.beginSheetModal(for: window)
     }
 }
