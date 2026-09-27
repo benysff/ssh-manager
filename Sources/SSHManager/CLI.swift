@@ -150,8 +150,10 @@ enum CLI {
                 cols.append("yük " + (r.load.map { String(format: "%.2f", $0) } ?? "—"))
                 if let u = r.updates { cols.append(u == 0 ? "güncel" : "\(u) güncelleme") }
             }
-            let detail = ev.issues.isEmpty ? "" : "  \u{1B}[\(colors[ev.level]!)m\(ev.issues.joined(separator: " · "))\u{1B}[0m"
-            print("\u{1B}[\(colors[ev.level]!)m●\u{1B}[0m \(name)\(pad)\(cols.joined(separator: "  "))\(detail)")
+            if !ev.issues.isEmpty {
+                cols.append("\u{1B}[\(colors[ev.level]!)m\(ev.issues.joined(separator: " · "))\u{1B}[0m")
+            }
+            print("\u{1B}[\(colors[ev.level]!)m●\u{1B}[0m \(name)\(pad)\(cols.joined(separator: "  "))")
         }
         return worst == .bad ? 2 : 0
     }
