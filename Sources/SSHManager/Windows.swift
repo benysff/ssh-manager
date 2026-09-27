@@ -43,13 +43,24 @@ func levelColor(_ level: HealthLevel) -> Color {
     }
 }
 
-/// Touch ID koruması açıksa, yönetici işlerinden önce bir kez kimlik doğrula.
+/// Touch ID koruması açıksa, işten önce bir kez kimlik doğrula (onay bir süre bütün sunuculara yeter).
 func confirmIdentityIfNeeded(_ reason: String) async -> Bool {
-    guard Settings.requireTouchID else { return true }
+    guard Settings.requireTouchID, !IdentityGate.isFresh else { return true }
     let ctx = LAContext()
     var err: NSError?
     guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else { return true }
-    return (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
+    guard (try? await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false else { return false }
+    IdentityGate.confirmed()
+    return true
+}
+
+/// Toplu işten önce: kimliği bir kez doğrula, kasayı bir kez aç (eski tek tek kayıtları da şimdi, sırayla taşı).
+/// Böylece izin pencereleri iş sırasında sunucu sunucu, üst üste açılmaz.
+@MainActor
+func prepareBatch(_ servers: [Server], reason: String) async -> Bool {
+    guard await confirmIdentityIfNeeded(reason) else { return false }
+    PasswordVault.unlock(for: servers)
+    return true
 }
 
 private let trLocale = Locale(identifier: "tr_TR")
@@ -227,7 +238,7 @@ final class CommandRunnerModel: ObservableObject {
         let chosen = servers.filter { targets.contains($0.id) }
         guard !cmd.isEmpty, !chosen.isEmpty else { return }
         Task { @MainActor in
-            if asRoot, !(await confirmIdentityIfNeeded("sunucularda yönetici olarak komut çalıştırmak")) { return }
+            guard await prepareBatch(chosen, reason: "sunucularda komut çalıştırmak") else { return }
             self.start(cmd, on: chosen)
         }
     }
@@ -467,7 +478,7 @@ final class UpdatesModel: ObservableObject {
     func checkSelected() {
         let chosen = selectedServers
         Task { @MainActor in
-            guard await confirmIdentityIfNeeded("sunuculardaki güncellemeleri kontrol etmek") else { return }
+            guard await prepareBatch(chosen, reason: "sunuculardaki güncellemeleri kontrol etmek") else { return }
             let queue = BatchQueue(limit: 4)
             for s in chosen {
                 guard let i = self.index(s.id) else { continue }
@@ -497,7 +508,7 @@ final class UpdatesModel: ObservableObject {
         let chosen = updatable.map(\.server)
         let securityOnly = self.securityOnly
         Task { @MainActor in
-            guard await confirmIdentityIfNeeded("sunucuları güncellemek") else { return }
+            guard await prepareBatch(chosen, reason: "sunucuları güncellemek") else { return }
             let queue = BatchQueue(limit: 3)
             for s in chosen {
                 guard let i = self.index(s.id) else { continue }

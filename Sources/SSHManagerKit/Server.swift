@@ -239,6 +239,7 @@ public final class ServerStore {
         servers.removeAll { $0.id == server.id }
         try save()
         KeychainHelper.deletePassword(account: server.keychainAccount)
+        KeychainHelper.deletePassword(account: server.keychainAccount + "-sudo")
     }
 
     public func server(id: UUID) -> Server? {

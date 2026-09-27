@@ -36,7 +36,7 @@ final class RemoteRun {
             userCompletion(result)
             keepAlive = nil
         }
-        let firstPassword = asRoot ? sudoPassword(allowUI: mode == .interactive) : nil
+        let firstPassword = asRoot ? sudoPassword(mode: mode) : nil
         launch(command: command, asRoot: asRoot, password: firstPassword, mode: mode, timeout: timeout,
                onOutput: onOutput) { [weak self] result in
             guard let self = self else { return }
@@ -71,6 +71,9 @@ final class RemoteRun {
         var env = ProcessInfo.processInfo.environment.merging(
             SSHCommand.askpassEnvironment(helper: AppPaths.executable, serverID: server.id)) { _, new in new }
         if mode == .silent { env[SSHCommand.Env.silent] = "1" }
+        // Giriş parolasını uygulama (kasadan, bir kez) verir; askpass Anahtar Zinciri'ne ayrıca gitmez.
+        let pipe = storedPassword(account: server.keychainAccount, mode: mode).flatMap { PasswordPipe(password: $0) }
+        if let pipe = pipe { env[SSHCommand.Env.passwordPipe] = pipe.path }
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: SSHCommand.sshPath)
@@ -102,6 +105,7 @@ final class RemoteRun {
         }
         p.terminationHandler = { [weak self] proc in
             killer.cancel()
+            pipe?.close()
             out.fileHandleForReading.readabilityHandler = nil
             let rest = out.fileHandleForReading.readDataToEndOfFile()
             DispatchQueue.main.async {
@@ -118,6 +122,7 @@ final class RemoteRun {
         do {
             try p.run()
         } catch {
+            pipe?.close()
             completion(Result(exitCode: 127, output: error.localizedDescription, duration: 0, timedOut: false))
             return
         }
@@ -135,9 +140,19 @@ final class RemoteRun {
     private var sudoAccount: String { server.keychainAccount + "-sudo" }
 
     /// Önce sunucuya özel kayıtlı sudo parolası, yoksa giriş parolası (çoğu sunucuda aynıdır).
-    private func sudoPassword(allowUI: Bool) -> String? {
-        KeychainHelper.readPassword(account: sudoAccount, allowUI: allowUI)
-            ?? KeychainHelper.readPassword(account: server.keychainAccount, allowUI: allowUI)
+    private func sudoPassword(mode: Mode) -> String? {
+        storedPassword(account: sudoAccount, mode: mode) ?? storedPassword(account: server.keychainAccount, mode: mode)
+    }
+
+    /// Kasadaki parola. Touch ID koruması açıksa önce kimlik doğrulanır; toplu işlerde bir onay bütün sunuculara yeter
+    /// (`IdentityGate`). Arka planda (sessiz) Touch ID sorulamayacağı için korumalıyken parola kullanılmaz.
+    private func storedPassword(account: String, mode: Mode) -> String? {
+        guard KeychainHelper.hasPassword(account: account) else { return nil }
+        if Settings.requireTouchID, !IdentityGate.isFresh {
+            guard mode == .interactive, AskPass.authenticate(reason: "\(server.name) için kayıtlı parolayı kullanmak") else { return nil }
+            IdentityGate.confirmed()
+        }
+        return KeychainHelper.readPassword(account: account, allowUI: mode == .interactive)
     }
 
     private func askSudoPassword(retry: Bool) -> String? {
@@ -160,6 +175,35 @@ final class RemoteRun {
         if save.state == .on { KeychainHelper.savePassword(field.stringValue, account: sudoAccount) }
         return field.stringValue
     }
+}
+
+/// Sunucu parolalarının kasası (tek Anahtar Zinciri kaydı) için uygulama tarafı kısayollar.
+enum PasswordVault {
+    /// Bir sunucunun kasada olabilecek hesapları: giriş parolası ve (ayrı kaydedildiyse) sudo parolası.
+    static func accounts(_ servers: [Server]) -> [String] {
+        servers.flatMap { [$0.keychainAccount, $0.keychainAccount + "-sudo"] }
+    }
+
+    /// Kasayı açar, bu sunucuların eski tek kayıtlarını taşır. macOS en fazla bir kez (kasa için) izin sorar;
+    /// eski sürümden kalan kayıtlar varsa onlar da son kez, sırayla sorulur.
+    @discardableResult
+    static func unlock(for servers: [Server]) -> Bool {
+        KeychainHelper.unlock(migrating: accounts(servers))
+    }
+
+    /// Arka plan kontrolleri parolaları kullanabilir mi? (Uygulama güncellendikten sonra macOS'un bir kez izin vermesi gerekir.)
+    static var isLocked: Bool {
+        !KeychainHelper.isUnlocked(accounts: accounts(ServerStore.shared.servers))
+    }
+}
+
+/// Touch ID onayının kısa bir süre geçerli sayılması: 100 sunuculuk toplu işte 100 kez parmak izi sorulmasın.
+enum IdentityGate {
+    private static var last: Date?
+    static let validity: TimeInterval = 10 * 60
+
+    static var isFresh: Bool { last.map { Date().timeIntervalSince($0) < validity } ?? false }
+    static func confirmed() { last = Date() }
 }
 
 /// Aynı anda en fazla `limit` sunucuda çalışan basit iş kuyruğu (ana iş parçacığında yönetilir).

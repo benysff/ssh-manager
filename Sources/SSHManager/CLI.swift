@@ -9,7 +9,7 @@ import SSHManagerKit
 ///   sshm durum [sunucu]       sunucuların sağlığı (disk, bellek, yük, güncellemeler)
 enum CLI {
     private static let commands: Set<String> = ["connect", "files", "list", "ls", "help", "--help", "-h", "--complete", "_betik",
-                                                "durum", "status", "_uzak", "_parola"]
+                                                "durum", "status", "_uzak", "_parola", "_test-kasasini-sil"]
 
     static func isCommand(_ arg: String?) -> Bool {
         arg.map { commands.contains($0) } ?? false
@@ -49,6 +49,9 @@ enum CLI {
                 targets = store.servers
             }
             return status(targets)
+        case "_test-kasasini-sil":
+            // Geliştirici aracı: SSHMANAGER_KEYCHAIN_SERVICE ile verilen TEST kasasını siler (gerçek kasaya dokunmaz).
+            return KeychainHelper.removeTestService() ? 0 : 1
         case "_parola":
             // Geliştirici aracı: sunucunun parolasını stdin'den okuyup Anahtar Zinciri'ne bu uygulama adına kaydeder.
             guard let server = resolve(args.dropFirst().first, store), let pw = readLine(strippingNewline: true), !pw.isEmpty else { return 1 }

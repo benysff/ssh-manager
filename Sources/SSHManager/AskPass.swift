@@ -35,14 +35,26 @@ enum AskPass {
 
     // MARK: - Sessiz mod (arka plan kontrolleri)
 
-    /// Hiçbir pencere açmaz: sadece ilk denemede, izin sormadan okunabilen kayıtlı parolayı verir.
-    /// Touch ID koruması açıksa parola hiç verilmez (arka planda parmak izi sorulamaz).
+    /// Hiçbir pencere açmaz: sadece ilk denemede, uygulamanın verdiği ya da izin sormadan okunabilen kayıtlı parolayı verir.
+    /// Touch ID koruması açıksa Anahtar Zinciri'nden parola alınmaz (arka planda parmak izi sorulamaz).
     private static func silent(kind: AskPassPrompt, server: Server?) -> Int32 {
-        guard kind == .password, let s = server, !Settings.requireTouchID else { return 1 }
+        guard kind == .password, let s = server else { return 1 }
         let attempt = AttemptCounter.next(key: "\(getppid())-\(s.id.uuidString)")
-        guard attempt == 1, let pw = KeychainHelper.readPassword(account: s.keychainAccount, allowUI: false) else { return 1 }
+        guard attempt == 1 else { return 1 }
+        if let pw = pipedPassword() {
+            reply(pw)
+            return 0
+        }
+        guard !Settings.requireTouchID,
+              let pw = KeychainHelper.readPassword(account: s.keychainAccount, allowUI: false) else { return 1 }
         reply(pw)
         return 0
+    }
+
+    /// Uygulama parolayı zaten verdiyse (toplu işler): Anahtar Zinciri'ne hiç gitmeden al.
+    /// Touch ID gerekiyorsa uygulama işi başlatmadan önce sormuştur.
+    private static func pipedPassword() -> String? {
+        ProcessInfo.processInfo.environment[SSHCommand.Env.passwordPipe].flatMap(PasswordPipe.take(path:))
     }
 
     // MARK: - Parola
@@ -51,6 +63,10 @@ enum AskPass {
         // Aynı ssh süreci ikinci kez soruyorsa kayıtlı parola yanlış demektir.
         let attempt = AttemptCounter.next(key: "\(getppid())-\(server?.id.uuidString ?? "yok")")
 
+        if attempt == 1, let pw = pipedPassword() {
+            reply(pw)
+            return 0
+        }
         if attempt == 1, let s = server, KeychainHelper.hasPassword(account: s.keychainAccount) {
             if Settings.requireTouchID {
                 guard authenticate(reason: "\(s.name) sunucusuna bağlanmak") else { return 1 }

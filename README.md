@@ -56,12 +56,17 @@ Terminalden `sshm` komutunu kullanmak için menüden **Ayarlar → Terminal komu
 
 - Parolalar yalnızca macOS **Anahtar Zinciri**'nde durur (`com.yusuf.sshmanager` servisi, sadece bu cihaz).
   Sunucu listesi `~/Library/Application Support/SSHManager/servers.json` dosyasındadır ve parola içermez.
-- Parola ssh'a `SSH_ASKPASS` üzerinden, doğrudan ve sadece istendiğinde verilir; terminale yazılmaz.
+- **Tek kasa, tek izin.** Bütün sunucu parolaları Anahtar Zinciri'nde *tek bir kayıtta* ("kasa") durur. macOS izni
+  kayıt başına sorduğu için 100 sunucun olsa da en fazla **bir kez** sorulur. Eski sürümden gelen sunucu başına
+  kayıtlar ilk kullanımda kendiliğinden kasaya taşınır.
+- Parola ssh'a `SSH_ASKPASS` üzerinden, doğrudan ve sadece istendiğinde verilir; terminale yazılmaz. Toplu işlerde
+  (güncelleme kontrolü, komut çalıştırma) uygulama kasayı bir kez açar ve parolayı ssh'a tek kullanımlık, bellekte
+  duran bir boruyla verir; diske yazılmaz, okununca silinir. Touch ID koruması açıksa bir onay bütün işe yeter.
 - İlk bağlantıda sunucunun parmak izi native bir pencerede gösterilir ve onayın istenir.
-- Anahtar Zinciri erişimi uygulamanın imzasına bağlıdır. Uygulamayı kaynaktan her yeniden derlediğinde macOS
-  kayıtlı parolalar için bir kez "izin ver" sorabilir; **Her Zaman İzin Ver** demen yeterli.
-- Arka plandaki sağlık kontrolleri **asla pencere açmaz**: Anahtar Zinciri izni ya da bilinmeyen bir parmak izi
-  gerekiyorsa o sunucu gri görünür ("Arka planda giriş yapılamadı"). Sunucuya bir kez normal bağlanıp izin vermen yeter.
+- Anahtar Zinciri erişimi uygulamanın imzasına bağlıdır. Uygulamayı güncellediğinde (yeniden derlediğinde) menüde
+  **Parolaların kilidini aç…** belirir; tıklayıp macOS'un sorusuna **Her Zaman İzin Ver** demen yeterli.
+- Arka plandaki sağlık kontrolleri **asla pencere açmaz**: kasa kilitliyse ya da bilinmeyen bir parmak izi
+  gerekiyorsa o sunucu gri görünür ("Arka planda giriş yapılamadı").
   Canlı (kırmızı temalı) sunucularda sistem değiştiren komutlar için "EVET" yazıp onaylaman istenir.
 
 ## Nasıl çalışır?
@@ -95,4 +100,5 @@ Midnight Commander file browsing, port-forwarding tunnels, colored terminals for
 and `~/.ssh/config` import. A health dashboard (⌘D, `sshm durum`) watches disk, memory, load, pending updates and
 failed services in the background and notifies you on changes; Ubuntu/Debian servers can be updated safely with one
 click (optionally security-only); a command library runs snippets on many servers at once, with sudo detected
-automatically (root, passwordless or password sudo). The UI is in Turkish. Install with `./kur.command` (macOS 13+, Swift required).
+automatically (root, passwordless or password sudo). All passwords live in a single Keychain item, so macOS asks
+for permission once, not once per server. The UI is in Turkish. Install with `./kur.command` (macOS 13+, Swift required).

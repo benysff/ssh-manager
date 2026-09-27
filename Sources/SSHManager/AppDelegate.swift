@@ -112,6 +112,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        if PasswordVault.isLocked {
+            // Uygulama güncellendikten (ya da eski sürümden geçildikten) sonra: tek izinle bütün parolalar açılsın.
+            let unlock = item("Parolaların kilidini aç…", #selector(unlockPasswords))
+            unlock.image = NSImage(systemSymbolName: "lock.open", accessibilityDescription: nil)
+            unlock.toolTip = "macOS bir kez izin sorar; sonra arka plan kontrolleri ve toplu işler her sunucu için ayrı ayrı sormaz."
+            menu.addItem(unlock)
+            menu.addItem(.separator())
+        }
         menu.addItem(item("Hızlı bağlan…", #selector(showQuickConnect), key: "s", modifiers: [.control, .option]))
         let health = item("Sağlık panosu…", #selector(openHealth), key: "d")
         health.image = NSImage(systemSymbolName: "heart.text.square", accessibilityDescription: nil)
@@ -376,6 +384,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Sağlık, komutlar, güncellemeler
 
     @objc private func openHealth() { showHealth() }
+
+    @objc private func unlockPasswords() {
+        NSApp.activate(ignoringOtherApps: true)
+        guard PasswordVault.unlock(for: store.servers) else { return }
+        HealthMonitor.shared.checkAll()
+    }
     @objc private func openRunner() { showRunner([]) }
     @objc private func openUpdates() { showUpdates(store.servers) }
 
