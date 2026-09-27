@@ -17,15 +17,32 @@ enum AskPass {
             .flatMap(UUID.init(uuidString:))
             .flatMap { ServerStore.shared.server(id: $0) }
 
+        let kind = AskPassPrompt.classify(prompt, promptEnv: env["SSH_ASKPASS_PROMPT"])
+        if env[SSHCommand.Env.silent] == "1" {
+            return silent(kind: kind, server: server)
+        }
+
         NSApplication.shared.setActivationPolicy(.accessory)
 
-        switch AskPassPrompt.classify(prompt, promptEnv: env["SSH_ASKPASS_PROMPT"]) {
+        switch kind {
         case .hostKey: return hostKey(prompt: prompt, server: server)
         case .confirm: return confirm(prompt: prompt)
         case .password: return password(prompt: prompt, server: server)
         case .passphrase: return ask(title: "Anahtar parolası", message: prompt, secure: true)
         case .other: return ask(title: server.map { "\($0.name) soruyor" } ?? "SSH soruyor", message: prompt, secure: true)
         }
+    }
+
+    // MARK: - Sessiz mod (arka plan kontrolleri)
+
+    /// Hiçbir pencere açmaz: sadece ilk denemede, izin sormadan okunabilen kayıtlı parolayı verir.
+    /// Touch ID koruması açıksa parola hiç verilmez (arka planda parmak izi sorulamaz).
+    private static func silent(kind: AskPassPrompt, server: Server?) -> Int32 {
+        guard kind == .password, let s = server, !Settings.requireTouchID else { return 1 }
+        let attempt = AttemptCounter.next(key: "\(getppid())-\(s.id.uuidString)")
+        guard attempt == 1, let pw = KeychainHelper.readPassword(account: s.keychainAccount, allowUI: false) else { return 1 }
+        reply(pw)
+        return 0
     }
 
     // MARK: - Parola

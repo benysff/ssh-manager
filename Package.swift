@@ -23,5 +23,12 @@ let package = Package(
             dependencies: ["SSHManagerKit"],
             path: "Tests/SSHManagerKitTests"
         ),
+        // Uzak betik testleri (sağlık, güncelleme, sudo, komut kütüphanesi). Komut Satırı Araçları'nda
+        // "TestingMacros not found" hatası için README'deki -plugin-path notuna bak.
+        .testTarget(
+            name: "SSHManagerKitScriptTests",
+            dependencies: ["SSHManagerKit"],
+            path: "Tests/SSHManagerKitScriptTests"
+        ),
     ]
 )

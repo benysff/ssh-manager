@@ -10,6 +10,8 @@ public enum SSHCommand {
         public static let askpassFlag = "SSHMANAGER_ASKPASS"
         public static let serverID = "SSHMANAGER_SERVER"
         public static let shimServerID = "SSHMANAGER_SHIM_SERVER"
+        /// Arka plan işleri: askpass asla pencere açmaz, sadece kayıtlı parolayı (izin gerekmeden okunabiliyorsa) verir.
+        public static let silent = "SSHMANAGER_ASKPASS_SILENT"
     }
 
     /// ssh'ın parola/onay sorularını `helper` programına sormasını sağlayan ortam.

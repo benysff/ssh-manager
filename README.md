@@ -22,6 +22,16 @@ ister (`SSH_ASKPASS`). "Dandik SSH uygulamaları" yerine sevdiğin terminali kul
 - **Renkli terminal.** Canlı sunucular kırmızı, test sunucuları yeşil açılsın; yanlış sunucuda komut çalıştırma riski azalır.
 - **Kopsa da devam (tmux).** Bağlantı koparsa kaldığın oturuma geri dönersin.
 - **`~/.ssh/config`'ten içe aktar.** Mevcut sunucuların tek tıkla gelir.
+- **Sağlık panosu (⌘D).** Her sunucunun diski, belleği, yükü, bekleyen güncellemeleri, yeniden başlatma ihtiyacı ve
+  çöken servisleri tek tabloda. Menüde her sunucunun yanında yeşil / sarı / kırmızı nokta; arka planda belirli
+  aralıklarla (varsayılan 15 dk) kontrol edilir, durum kötüleşince ya da düzelince bildirim gelir. Terminalden: `sshm durum`.
+- **Tek tuşla güncelleme.** Ubuntu/Debian sunucularında önce neyin güncelleneceğini gösterir, sonra seçtiğin sunucularda
+  güvenle `apt upgrade` yapar (yapılandırma dosyalarına dokunmaz, soru sormaz). **Sadece güvenlik güncellemeleri**
+  seçeneği ve 1 dakika sonra (iptal edilebilir) yeniden başlatma dahil.
+- **Komut kütüphanesi.** "Disk doluluğu", "En büyük klasörler", "Çöken servisler", "Nginx'i yeniden yükle" gibi hazır
+  komutlar, kendi kaydettiğin komutlar; aynı anda birden çok sunucuda çalıştır, çıktıları sunucu sunucu gör.
+- **sudo kendiliğinden çözülür.** root musun, parolasız sudo mu var, parola mı gerekiyor; SSHManager kendisi anlar.
+  Gerekirse sudo parolası da Anahtar Zinciri'nden gelir, yanlışsa bir kez sorulur.
 - **Raycast / Alfred / Kestirmeler:** `sshmanager://connect/web`, `sshmanager://files/web`, `sshmanager://quick`.
 
 ## Kurulum
@@ -50,6 +60,9 @@ Terminalden `sshm` komutunu kullanmak için menüden **Ayarlar → Terminal komu
 - İlk bağlantıda sunucunun parmak izi native bir pencerede gösterilir ve onayın istenir.
 - Anahtar Zinciri erişimi uygulamanın imzasına bağlıdır. Uygulamayı kaynaktan her yeniden derlediğinde macOS
   kayıtlı parolalar için bir kez "izin ver" sorabilir; **Her Zaman İzin Ver** demen yeterli.
+- Arka plandaki sağlık kontrolleri **asla pencere açmaz**: Anahtar Zinciri izni ya da bilinmeyen bir parmak izi
+  gerekiyorsa o sunucu gri görünür ("Arka planda giriş yapılamadı"). Sunucuya bir kez normal bağlanıp izin vermen yeter.
+  Canlı (kırmızı temalı) sunucularda sistem değiştiren komutlar için "EVET" yazıp onaylaman istenir.
 
 ## Nasıl çalışır?
 
@@ -59,9 +72,13 @@ Aynı program dört rolde çalışır: menü çubuğu uygulaması, `sshm` komutu
 
 | Klasör | Ne var |
 |---|---|
-| `Sources/SSHManagerKit` | Sunucu modeli, ssh komutu oluşturma, `~/.ssh/config` okuma, Anahtar Zinciri (test edilebilir çekirdek) |
-| `Sources/SSHManager` | Menü çubuğu, terminal açıcı, askpass, `sshm`, tüneller, hızlı bağlan, anahtar kurulumu |
+| `Sources/SSHManagerKit` | Sunucu modeli, ssh komutu oluşturma, `~/.ssh/config` okuma, Anahtar Zinciri, uzak betikler (sağlık, güncelleme, sudo), komut kütüphanesi (test edilebilir çekirdek) |
+| `Sources/SSHManager` | Menü çubuğu, terminal açıcı, askpass, `sshm`, tüneller, hızlı bağlan, anahtar kurulumu, sağlık izleme, komut ve güncelleme pencereleri |
 | `Tests` | Birim testleri (`swift test`) |
+
+Sadece Command Line Tools ile (Xcode'suz) testte "plugin for module 'TestingMacros' not found" hatası alırsan
+eklenti klasörünü elle ver:
+`swift test -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing`
 
 ## Lisans
 
@@ -75,4 +92,7 @@ SSHManager is a macOS menu bar app that opens SSH connections in the native Term
 Passwords live in the macOS Keychain and are handed to `ssh` through `SSH_ASKPASS`, so they are never typed into
 the terminal. It also offers Touch ID, one-click SSH key setup, a quick-connect palette (⌃⌥S), an `sshm` CLI,
 Midnight Commander file browsing, port-forwarding tunnels, colored terminals for production servers, tmux resume
-and `~/.ssh/config` import. The UI is in Turkish. Install with `./kur.command` (macOS 13+, Swift required).
+and `~/.ssh/config` import. A health dashboard (⌘D, `sshm durum`) watches disk, memory, load, pending updates and
+failed services in the background and notifies you on changes; Ubuntu/Debian servers can be updated safely with one
+click (optionally security-only); a command library runs snippets on many servers at once, with sudo detected
+automatically (root, passwordless or password sudo). The UI is in Turkish. Install with `./kur.command` (macOS 13+, Swift required).

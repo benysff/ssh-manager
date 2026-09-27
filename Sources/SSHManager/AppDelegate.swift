@@ -29,6 +29,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKey = HotKey { [weak self] in self?.quickConnect.show() }
 
         tunnels.onChange = { [weak self] in self?.updateIcon() }
+
+        AppActions.connect = { [weak self] in self?.connect($0) }
+        HealthMonitor.shared.onChange = { [weak self] in self?.updateIcon() }
+        HealthMonitor.shared.start()
+        if Settings.healthNotifications { HealthMonitor.shared.requestNotificationPermission() }
         tunnels.onFailure = { [weak self] server, tunnel, reason in
             self?.presentError("\(server.name) tüneli kapandı (\(tunnel.title)).\n\n\(reason)")
         }
@@ -74,7 +79,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.image = NSImage(systemSymbolName: active ? "terminal.fill" : "terminal",
                                accessibilityDescription: "SSHManager")
         button.image?.isTemplate = true
-        button.toolTip = active ? "SSHManager — \(tunnels.activeCount) tünel açık" : "SSHManager"
+        // Sorunlu sunucu varsa simgenin yanında renkli nokta.
+        let worst = HealthMonitor.shared.worst
+        var tip = active ? "SSHManager — \(tunnels.activeCount) tünel açık" : "SSHManager"
+        if worst.level == .bad || worst.level == .warn {
+            let color: NSColor = worst.level == .bad ? .systemRed : .systemOrange
+            button.attributedTitle = NSAttributedString(string: " ●", attributes: [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 9)])
+            tip += worst.level == .bad ? " — \(worst.count) sunucuda sorun var" : " — \(worst.count) sunucu dikkat istiyor"
+        } else {
+            button.title = ""
+        }
+        button.toolTip = tip
+    }
+
+    private func statusDot(_ level: HealthLevel) -> NSImage {
+        let color: NSColor = [.ok: .systemGreen, .warn: .systemOrange, .bad: .systemRed][level] ?? .tertiaryLabelColor
+        return NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
     }
 
     // MARK: - Menü
@@ -89,6 +113,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(item("Hızlı bağlan…", #selector(showQuickConnect), key: "s", modifiers: [.control, .option]))
+        let health = item("Sağlık panosu…", #selector(openHealth), key: "d")
+        health.image = NSImage(systemSymbolName: "heart.text.square", accessibilityDescription: nil)
+        menu.addItem(health)
+        let runner = item("Komut çalıştır…", #selector(openRunner))
+        runner.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+        menu.addItem(runner)
+        let updates = item("Güncellemeler…", #selector(openUpdates))
+        updates.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        menu.addItem(updates)
         menu.addItem(.separator())
 
         let groups = store.grouped()
@@ -123,15 +156,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.toolTip = "\(server.sshDestination):\(server.port) · terminalde: sshm \(store.alias(of: server))"
 
         let hasKey = !server.identityFile.isEmpty
-        let hasPassword = KeychainHelper.hasPassword(account: server.keychainAccount)
-        let activeTunnels = server.tunnels.filter { tunnels.isActive(server, $0) }.count
-        let symbol = activeTunnels > 0 ? "point.3.connected.trianglepath.dotted"
-            : hasKey ? "key.horizontal.fill" : hasPassword ? "key.fill" : "key"
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        item.image?.isTemplate = true
+        // Sunucunun yanında sağlık durumu (yeşil/turuncu/kırmızı/gri).
+        let report = HealthMonitor.shared.reports[server.id]
+        let evaluation = report?.evaluation
+        item.image = statusDot(evaluation?.level ?? .unknown)
 
         let sub = NSMenu()
         sub.autoenablesItems = false
+        if let report = report, let ev = evaluation {
+            let summary: String
+            if ev.issues.isEmpty {
+                var parts = ["Sağlıklı"]
+                if let d = report.disk { parts.append("Disk %\(d)") }
+                if let m = report.memory { parts.append("Bellek %\(m)") }
+                summary = parts.joined(separator: " · ")
+            } else {
+                summary = ev.issues.prefix(3).joined(separator: " · ")
+            }
+            sub.addItem(disabled(summary))
+            let ago = RelativeDateTimeFormatter()
+            ago.locale = Locale(identifier: "tr_TR")
+            sub.addItem(disabled("Son kontrol: \(ago.localizedString(for: report.checkedAt, relativeTo: Date()))"))
+        } else {
+            sub.addItem(disabled("Durum henüz bilinmiyor"))
+        }
+        sub.addItem(serverAction("Şimdi kontrol et", #selector(checkNow(_:)), server))
+        sub.addItem(serverAction("Komut çalıştır…", #selector(runOnServer(_:)), server))
+        sub.addItem(serverAction("Güncellemeler…", #selector(updatesForServer(_:)), server))
+        sub.addItem(.separator())
         sub.addItem(serverAction("Bağlan", #selector(connectItem(_:)), server))
         let files = serverAction("Dosyalar (Midnight Commander)", #selector(filesItem(_:)), server)
         files.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
@@ -187,6 +239,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let touch = item("Kayıtlı parolayı kullanmadan önce Touch ID iste", #selector(toggleTouchID))
         touch.state = Settings.requireTouchID ? .on : .off
         sub.addItem(touch)
+
+        let healthMenu = NSMenuItem(title: "Sağlık kontrolü", action: nil, keyEquivalent: "")
+        let hsub = NSMenu()
+        hsub.autoenablesItems = false
+        for (minutes, title) in [(0, "Kapalı"), (5, "5 dakikada bir"), (15, "15 dakikada bir"), (30, "30 dakikada bir"), (60, "Saatte bir")] {
+            let i = item(title, #selector(setHealthInterval(_:)))
+            i.representedObject = minutes
+            i.state = Settings.healthInterval == minutes ? .on : .off
+            hsub.addItem(i)
+        }
+        hsub.addItem(.separator())
+        let notif = item("Durum değişince bildirim göster", #selector(toggleHealthNotifications))
+        notif.state = Settings.healthNotifications ? .on : .off
+        hsub.addItem(notif)
+        healthMenu.submenu = hsub
+        sub.addItem(healthMenu)
 
         let login = item("Oturum açılınca başlat", #selector(toggleLoginItem))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -303,6 +371,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 presentError(error.localizedDescription)
             }
         }
+    }
+
+    // MARK: - Sağlık, komutlar, güncellemeler
+
+    @objc private func openHealth() { showHealth() }
+    @objc private func openRunner() { showRunner([]) }
+    @objc private func openUpdates() { showUpdates(store.servers) }
+
+    @objc private func checkNow(_ sender: NSMenuItem) {
+        if let s = server(from: sender) { HealthMonitor.shared.check(s) }
+    }
+
+    @objc private func runOnServer(_ sender: NSMenuItem) {
+        if let s = server(from: sender) { showRunner([s]) }
+    }
+
+    @objc private func updatesForServer(_ sender: NSMenuItem) {
+        if let s = server(from: sender) { showUpdates([s]) }
+    }
+
+    @objc private func setHealthInterval(_ sender: NSMenuItem) {
+        guard let minutes = sender.representedObject as? Int else { return }
+        Settings.healthInterval = minutes
+        HealthMonitor.shared.reschedule()
+        if minutes > 0 { HealthMonitor.shared.checkAll() }
+    }
+
+    @objc private func toggleHealthNotifications() {
+        Settings.healthNotifications.toggle()
+        if Settings.healthNotifications { HealthMonitor.shared.requestNotificationPermission() }
     }
 
     @objc private func copyCommand(_ sender: NSMenuItem) {

@@ -34,7 +34,9 @@ public enum KeychainHelper {
     }
 
     /// Parolayı okur. Yoksa nil döner.
-    public static func readPassword(account: String) -> String? {
+    /// `allowUI: false` ise macOS'un "Anahtar Zinciri'ne erişim izni" penceresi hiç açılmaz; izin gerekiyorsa nil döner
+    /// (arka plandaki sağlık kontrolleri kullanıcıyı pencerelerle rahatsız etmesin diye).
+    public static func readPassword(account: String, allowUI: Bool = true) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -43,7 +45,17 @@ public enum KeychainHelper {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status: OSStatus
+        if allowUI {
+            status = SecItemCopyMatching(query as CFDictionary, &result)
+        } else {
+            // kSecUseAuthenticationUIFail dosya tabanlı Anahtar Zinciri'nde izin penceresini engellemiyor (macOS 27'de
+            // takılabiliyor). Arka plan araçları için klasik yol: bu süreçte her türlü Anahtar Zinciri penceresini kapat;
+            // izin gerekiyorsa pencere yerine hemen hata döner.
+            SecKeychainSetUserInteractionAllowed(false)
+            status = SecItemCopyMatching(query as CFDictionary, &result)
+            SecKeychainSetUserInteractionAllowed(true)
+        }
         guard status == errSecSuccess,
               let data = result as? Data,
               let password = String(data: data, encoding: .utf8) else {

@@ -1,0 +1,187 @@
+import AppKit
+import SSHManagerKit
+
+/// Sunucuda terminal açmadan komut çalıştırır (`ssh -T`) ve çıktıyı canlı verir.
+///
+/// - `interactive`: gerekirse native pencereler açılır (parola, parmak izi, sudo parolası).
+/// - `silent`: arka plan işleri için; asla pencere açmaz, izin gerekiyorsa sessizce başarısız olur.
+final class RemoteRun {
+    enum Mode { case interactive, silent }
+
+    struct Result {
+        let exitCode: Int32
+        let output: String
+        let duration: TimeInterval
+        let timedOut: Bool
+        var ok: Bool { exitCode == 0 && !timedOut }
+    }
+
+    let server: Server
+    private var process: Process?
+    private var cancelled = false
+    /// Çalışırken kendini canlı tutar: çağıran taraf referans tutmasa da ("RemoteRun(...).start")
+    /// iş bitince tamamlanma çağrısı mutlaka gelir.
+    private var keepAlive: RemoteRun?
+    private(set) var output = ""
+
+    init(server: Server) {
+        self.server = server
+    }
+
+    /// Komutu çalıştırır. `asRoot` ise sudo gerektiği gibi halledilir (root / parolasız sudo / parolalı sudo).
+    func start(command: String, asRoot: Bool, mode: Mode, timeout: TimeInterval = 600,
+               onOutput: ((String) -> Void)? = nil, completion userCompletion: @escaping (Result) -> Void) {
+        keepAlive = self
+        let completion: (Result) -> Void = { [self] result in
+            userCompletion(result)
+            keepAlive = nil
+        }
+        let firstPassword = asRoot ? sudoPassword(allowUI: mode == .interactive) : nil
+        launch(command: command, asRoot: asRoot, password: firstPassword, mode: mode, timeout: timeout,
+               onOutput: onOutput) { [weak self] result in
+            guard let self = self else { return }
+            // sudo parolası kabul edilmediyse (ön plandaysa) kullanıcıya bir kez sor ve tekrar dene.
+            guard asRoot, mode == .interactive, !self.cancelled, !result.ok,
+                  RemoteScripts.sudoPasswordRejected(result.output) else { return completion(result) }
+            guard let typed = self.askSudoPassword(retry: firstPassword != nil) else { return completion(result) }
+            onOutput?("\n— sudo parolası ile tekrar deneniyor —\n")
+            self.launch(command: command, asRoot: true, password: typed, mode: mode, timeout: timeout,
+                        onOutput: onOutput, completion: completion)
+        }
+    }
+
+    func cancel() {
+        cancelled = true
+        process?.terminate()
+    }
+
+    // MARK: - Süreç
+
+    private func launch(command: String, asRoot: Bool, password: String?, mode: Mode, timeout: TimeInterval,
+                        onOutput: ((String) -> Void)?, completion: @escaping (Result) -> Void) {
+        output = ""
+        let remote = asRoot ? RemoteScripts.asRoot(command) : command
+        var args = SSHCommand.baseOptions(for: server) + ["-T", "-o", "ConnectTimeout=10"]
+        if mode == .silent {
+            // Parmak izi bilinmiyorsa sorma, parola bir kez denensin (sunucu tarafında engellenmeyelim).
+            args += ["-o", "StrictHostKeyChecking=yes", "-o", "NumberOfPasswordPrompts=1"]
+        }
+        args += ["--", server.sshDestination, remote]
+
+        var env = ProcessInfo.processInfo.environment.merging(
+            SSHCommand.askpassEnvironment(helper: AppPaths.executable, serverID: server.id)) { _, new in new }
+        if mode == .silent { env[SSHCommand.Env.silent] = "1" }
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: SSHCommand.sshPath)
+        p.arguments = args
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = out
+        let input = Pipe()
+        p.standardInput = asRoot ? input : FileHandle.nullDevice
+
+        out.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let data = h.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { return }
+            DispatchQueue.main.async {
+                self?.output += text
+                // BD_ satırları uygulamanın kendi işaretleri; kullanıcıya gösterilmez.
+                let visible = text.split(separator: "\n", omittingEmptySubsequences: false)
+                    .filter { !$0.hasPrefix("BD_") }.joined(separator: "\n")
+                if !visible.isEmpty { onOutput?(visible) }
+            }
+        }
+
+        let started = Date()
+        var timedOut = false
+        let killer = DispatchWorkItem { [weak p] in
+            timedOut = true
+            p?.terminate()
+        }
+        p.terminationHandler = { [weak self] proc in
+            killer.cancel()
+            out.fileHandleForReading.readabilityHandler = nil
+            let rest = out.fileHandleForReading.readDataToEndOfFile()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let text = String(data: rest, encoding: .utf8), !text.isEmpty {
+                    self.output += text
+                    onOutput?(RemoteScripts.visibleOutput(text))
+                }
+                completion(Result(exitCode: proc.terminationStatus, output: self.output,
+                                  duration: Date().timeIntervalSince(started), timedOut: timedOut))
+            }
+        }
+
+        do {
+            try p.run()
+        } catch {
+            completion(Result(exitCode: 127, output: error.localizedDescription, duration: 0, timedOut: false))
+            return
+        }
+        process = p
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+        if asRoot {
+            // Tek satır: kayıtlı parola ya da boş satır. Uzak sarmalayıcı gerekirse sudo'ya verir, gerekmezse atar.
+            input.fileHandleForWriting.write(Data(((password ?? "") + "\n").utf8))
+            try? input.fileHandleForWriting.close()
+        }
+    }
+
+    // MARK: - sudo parolası
+
+    private var sudoAccount: String { server.keychainAccount + "-sudo" }
+
+    /// Önce sunucuya özel kayıtlı sudo parolası, yoksa giriş parolası (çoğu sunucuda aynıdır).
+    private func sudoPassword(allowUI: Bool) -> String? {
+        KeychainHelper.readPassword(account: sudoAccount, allowUI: allowUI)
+            ?? KeychainHelper.readPassword(account: server.keychainAccount, allowUI: allowUI)
+    }
+
+    private func askSudoPassword(retry: Bool) -> String? {
+        let alert = NSAlert()
+        alert.messageText = retry ? "\(server.name): sudo parolası kabul edilmedi" : "\(server.name): sudo parolası gerekli"
+        alert.informativeText = "Bu işlem yönetici yetkisi istiyor. \(server.user) kullanıcısının sudo parolasını gir."
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let save = NSButton(checkboxWithTitle: "Anahtar Zinciri'ne kaydet", target: nil, action: nil)
+        save.state = .on
+        let stack = NSStackView(views: [field, save])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.frame = NSRect(x: 0, y: 0, width: 300, height: 56)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Devam")
+        alert.addButton(withTitle: "Vazgeç")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty else { return nil }
+        if save.state == .on { KeychainHelper.savePassword(field.stringValue, account: sudoAccount) }
+        return field.stringValue
+    }
+}
+
+/// Aynı anda en fazla `limit` sunucuda çalışan basit iş kuyruğu (ana iş parçacığında yönetilir).
+final class BatchQueue {
+    private var pending: [() -> Void] = []
+    private var running = 0
+    private let limit: Int
+
+    init(limit: Int = 4) { self.limit = limit }
+
+    /// `job` bitince verilen `done` çağrılmalı.
+    func add(_ job: @escaping (_ done: @escaping () -> Void) -> Void) {
+        pending.append { [weak self] in
+            job { DispatchQueue.main.async { self?.running -= 1; self?.next() } }
+        }
+        next()
+    }
+
+    private func next() {
+        while running < limit, !pending.isEmpty {
+            running += 1
+            pending.removeFirst()()
+        }
+    }
+}

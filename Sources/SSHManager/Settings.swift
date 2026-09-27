@@ -27,6 +27,18 @@ enum Settings {
         set { defaults.set(newValue, forKey: "terminalTabs") }
     }
 
+    /// Sağlık kontrolü aralığı (dakika). 0 = kapalı.
+    static var healthInterval: Int {
+        get { defaults.object(forKey: "healthInterval") as? Int ?? 15 }
+        set { defaults.set(newValue, forKey: "healthInterval") }
+    }
+
+    /// Sunucu durumu değişince bildirim göster.
+    static var healthNotifications: Bool {
+        get { defaults.object(forKey: "healthNotifications") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "healthNotifications") }
+    }
+
     /// Kayıtlı parola kullanılmadan önce Touch ID (ya da Mac parolası) iste.
     static var requireTouchID: Bool {
         get { defaults.bool(forKey: "requireTouchID") }
